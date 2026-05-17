@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <title>Digital Key Server Debug</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 24px;
+            color: #1f2937;
+        }
+
+        h1 {
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            margin-bottom: 20px;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            border: none;
+            padding: 10px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #111827;
+            color: white;
+            font-weight: 600;
+        }
+
+        button.secondary {
+            background: #dc2626;
+        }
+
+        .event {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+            border-left: 6px solid #2563eb;
+        }
+
+        .event.error {
+            border-left-color: #dc2626;
+        }
+
+        .event.success {
+            border-left-color: #16a34a;
+        }
+
+        .meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: #e5e7eb;
+            font-weight: 600;
+        }
+
+        .method {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+
+        .status-ok {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .status-error {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        pre {
+            background: #0f172a;
+            color: #e5e7eb;
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+
+        .empty {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            color: #6b7280;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Digital Key Server Debug</h1>
+    <div class="subtitle">
+        Theo dõi app Android đang gửi gì tới backend server.
+    </div>
+
+    <div class="toolbar">
+        <button onclick="loadEvents()">Refresh</button>
+        <button class="secondary" onclick="clearEvents()">Clear logs</button>
+    </div>
+
+    <div id="events"></div>
+
+    <script>
+        async function loadEvents() {
+            const container = document.getElementById("events");
+
+            try {
+                const res = await fetch("/debug/events");
+                const data = await res.json();
+
+                if (!data.events || data.events.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty">
+                            Chưa có request nào. Hãy thử login/register từ app Android.
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = data.events.map(event => {
+                    const isSuccess = event.statusCode >= 200 && event.statusCode < 300;
+                    const eventClass = isSuccess ? "success" : "error";
+                    const statusClass = isSuccess ? "status-ok" : "status-error";
+
+                    return `
+                        <div class="event ${eventClass}">
+                            <div class="meta">
+                                <span class="badge method">${event.method}</span>
+                                <span class="badge">${event.url}</span>
+                                <span class="badge ${statusClass}">Status ${event.statusCode}</span>
+                                <span class="badge">${event.durationMs} ms</span>
+                                <span class="badge">${event.time}</span>
+                            </div>
+
+                            <h3>Request gửi từ app</h3>
+                            <pre>${escapeHtml(JSON.stringify(event.request, null, 2))}</pre>
+
+                            <h3>Response server trả về</h3>
+                            <pre>${escapeHtml(JSON.stringify(event.response, null, 2))}</pre>
+                        </div>
+                    `;
+                }).join("");
+            } catch (err) {
+                container.innerHTML = `
+                    <div class="empty">
+                        Không tải được debug events: ${err.message}
+                    </div>
+                `;
+            }
+        }
+
+        async function clearEvents() {
+            await fetch("/debug/events", {
+                method: "DELETE"
+            });
+
+            loadEvents();
+        }
+
+        function escapeHtml(text) {
+            return text
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;");
+        }
+
+        loadEvents();
+        setInterval(loadEvents, 2000);
+    </script>
+</body>
+</html>

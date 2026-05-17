@@ -1,0 +1,146 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f3f5f7;
+    color: #222;
+}
+
+.page {
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 24px;
+}
+
+.card {
+    width: 100%;
+    max-width: 460px;
+    background: white;
+    border-radius: 16px;
+    padding: 28px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+    margin: 0;
+    text-align: center;
+    font-size: 28px;
+}
+
+.subtitle {
+    text-align: center;
+    color: #666;
+    margin: 8px 0 22px;
+    font-size: 14px;
+}
+
+.tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.tab {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid #ddd;
+    background: #f8f8f8;
+    cursor: pointer;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.tab.active {
+    background: #111827;
+    color: white;
+    border-color: #111827;
+}
+
+.form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+label {
+    font-size: 14px;
+    font-weight: 600;
+    margin-top: 6px;
+}
+
+input {
+    padding: 12px;
+    border: 1px solid #d6d6d6;
+    border-radius: 10px;
+    font-size: 14px;
+}
+
+input:focus {
+    outline: none;
+    border-color: #111827;
+}
+
+.submit-btn {
+    margin-top: 14px;
+    padding: 13px;
+    border: none;
+    border-radius: 10px;
+    background: #111827;
+    color: white;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.submit-btn:hover {
+    opacity: 0.9;
+}
+
+.hidden {
+    display: none;
+}
+
+.message {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 10px;
+    display: none;
+    font-size: 14px;
+}
+
+.message.success {
+    display: block;
+    background: #e8f7ee;
+    color: #146c2e;
+}
+
+.message.error {
+    display: block;
+    background: #fdecec;
+    color: #a11b1b;
+}
+
+.result-box {
+    margin-top: 18px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+.result-box h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+}
+
+pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    font-size: 12px;
+}

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digital Key Server Auth</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="page">
+        <div class="card">
+            <h1>Digital Key Server</h1>
+            <p class="subtitle">Sign in / Sign up demo for PostgreSQL server</p>
+
+            <div class="tabs">
+                <button id="loginTab" class="tab active">Sign In</button>
+                <button id="registerTab" class="tab">Sign Up</button>
+            </div>
+
+            <form id="loginForm" class="form">
+                <label>Email</label>
+                <input type="email" id="loginEmail" placeholder="owner@gmail.com" required />
+            
+                <label>Password</label>
+                <input type="password" id="loginPassword" placeholder="123456" required />
+            
+                <button type="submit" class="submit-btn">Sign In</button>
+            </form>
+
+            <form id="registerForm" class="form hidden">
+                <label>Email</label>
+                <input type="email" id="registerEmail" placeholder="owner@gmail.com" required />
+
+                <label>Password</label>
+                <input type="password" id="registerPassword" placeholder="123456" required />
+                
+                <label>Confirm Password</label>
+                <input type="password" id="registerConfirmPassword" placeholder="Nhập lại mật khẩu" required />
+
+                <label>Display Name</label>
+                <input type="text" id="registerDisplayName" placeholder="Owner" required />
+
+                <label>Identity Public Key</label>
+                <input type="text" id="registerIdentityPk" placeholder="aabbccddeeff00112233445566778899" required />
+
+                <label>Device Name</label>
+                <input type="text" id="registerDeviceName" placeholder="Owner Android" />
+
+                <button type="submit" class="submit-btn">Sign Up</button>
+            </form>
+
+            <div id="message" class="message"></div>
+
+            <!-- <div id="resultBox" class="result-box hidden">
+                <h3>Response</h3>
+                <pre id="result"></pre>
+            </div> -->
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
