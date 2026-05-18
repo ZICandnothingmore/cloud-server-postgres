@@ -2,9 +2,6 @@
 
 Backend server cho hệ thống Digital Key, sử dụng Node.js, Express và PostgreSQL (Neon Cloud Database).
 
-Project đã được cấu hình sẵn database và environment variables phục vụ mục đích test/demo.  
-Chỉ cần clone project, cài dependencies và chạy server.
-
 ---
 
 # Công nghệ sử dụng
