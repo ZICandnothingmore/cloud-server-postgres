@@ -64,6 +64,7 @@ http://localhost:3000
 # Database
 
 tạo file .env, copy file được gửi vào nhe
+
 sử dụng postgre cloud: https://console.neon.tech/app/org-damp-sun-28077344/projects
 
 # API Endpoints
