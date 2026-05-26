@@ -84,32 +84,39 @@ app.set("trust proxy", 1);
 const defaultAllowedOrigins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "http://127.0.0.1:5173"
-];
-
-const envAllowedOrigins = (process.env.CLIENT_ORIGINS || "")
+    "http://localhost:3001",
+  
+    // Render backend / frontend hiện tại
+    "https://cloud-server-postgres-1.onrender.com",
+  ];
+  
+  const envAllowedOrigins = (process.env.CLIENT_ORIGINS || "")
     .split(",")
-    .map(origin => origin.trim())
+    .map((origin) => origin.trim())
     .filter(Boolean);
-
-const allowedOrigins = [
+  
+  const allowedOrigins = [
     ...defaultAllowedOrigins,
-    ...envAllowedOrigins
-];
-
-app.use(cors({
-    origin(origin, callback) {
-        // Cho phép request không có Origin: Postman, curl, ESP32, server-to-server.
-        if (!origin) return callback(null, true);
-
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
+    ...envAllowedOrigins,
+  ];
+  
+  app.use(
+    cors({
+      origin: function (origin, callback) {
+        // Cho phép request không có Origin: PowerShell, Postman, curl, ESP32...
+        if (!origin) {
+          return callback(null, true);
         }
-
+  
+        if (allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+  
         return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true
-}));
+      },
+      credentials: true,
+    })
+  );
 
 app.use(express.json({ limit: "1mb" }));
 
