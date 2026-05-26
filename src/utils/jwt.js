@@ -7,7 +7,7 @@ function signAccessToken(user) {
             email: user.email,
             role: user.role || "USER"
         },
-        process.env.JWT_ACCESS_SECRET,
+        process.env.JWT_SECRET,
         {
             expiresIn: process.env.ACCESS_TOKEN_EXPIRES || "1h",
         }
@@ -29,7 +29,7 @@ function signRefreshToken(user) {
 }
 
 function verifyAccessToken(token) {
-    return jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+    return jwt.verify(token, process.env.JWT_SECRET);
 }
 
 function verifyRefreshToken(token) {
