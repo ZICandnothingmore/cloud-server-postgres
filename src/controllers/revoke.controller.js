@@ -191,7 +191,7 @@ function buildSignedCloudRevokePayload({ moduleId, ownerKeyId, revokeJobId, reas
         expiresAt: expiresAt.toISOString(),
         nonce: crypto.randomBytes(16).toString("hex"),
         reasonHash: sha256Hex(reason),
-        requireRevocationAttestation: true,
+        requireVehicleResult: true,
         sigAlg: "DILITHIUM3",
         sigAlgNote: "CRYSTALS-Dilithium3 round3; ML-DSA-65-compatible security level for project prototype",
         signerKeyId: getCloudDilithiumKeyId()
@@ -987,7 +987,7 @@ module.exports = {
                     {
                         ...ownerKey,
                         revoke_type: "CLOUD_REVOKE_OWNER",
-                        attestation_required: true,
+                        vehicle_result_required: true,
                         signature_required: true,
                         sig_alg: "DILITHIUM3",
                         signer_key_id: getCloudDilithiumKeyId()
@@ -1018,7 +1018,7 @@ module.exports = {
                     {
                         ...(revokeJob.key_snapshot || {}),
                         revoke_type: "CLOUD_REVOKE_OWNER",
-                        attestation_required: true,
+                        vehicle_result_required: true,
                         signature_required: true,
                         sig_alg: "DILITHIUM3",
                         signer_key_id: getCloudDilithiumKeyId(),
@@ -1035,12 +1035,13 @@ module.exports = {
  
             return res.status(201).json({
                 success: true,
-                message: "Cloud owner revoke request created. Vehicle must verify the Dilithium3 signature, wipe local keys, and return Revocation Attestation before Owner app wipes local key.",
+                message: "Cloud owner revoke request created. Server must send this signed revoke command to ESP32. Vehicle verifies the signature, wipes local keys, then reports SUCCESS/FAILED.",
                 flow: "CLOUD_REVOKE_OWNER",
                 revokeJob: updatedJobResult.rows[0],
                 vehicleCommand: {
                     command: "CMD_REVOKE_OWNER",
                     transport: "REMOTE_TO_VEHICLE",
+                    deliveryMode: "SERVER_TO_ESP32",
                     signedPayload,
                     canonicalPayload,
                     payloadHash,
@@ -1054,7 +1055,7 @@ module.exports = {
                         checkExpiresAt: true,
                         checkNonceReplay: true,
                         checkSignatureWithPinnedCloudPublicKey: true,
-                        requireRevocationAttestation: true
+                        requireVehicleResult: true
                     }
                 }
             });
@@ -1075,53 +1076,50 @@ module.exports = {
      * CASE 2 - Xe gửi Revocation Attestation về Cloud.
      * Sau bước này Cloud xóa key trên DB, chuyển xe về UNPAIRED và trả gói attestation để push cho Owner app verify & wipe.
      */
-    completeCloudOwnerRevokeWithAttestation: async (req, res) => {
+    completeCloudOwnerRevokeWithVehicleResult: async (req, res) => {
         const client = await pool.connect();
- 
+    
         try {
             await client.query("BEGIN");
- 
+    
             const jobId = req.body.jobId || req.body.job_id || req.body.id;
             const moduleId = getModuleId(req.body);
-            const attestation = getAttestation(req.body);
-            const failureReason = req.body.failureReason || req.body.failure_reason || req.body.error || null;
- 
+    
+            const rawStatus =
+                req.body.status ||
+                req.body.result ||
+                req.body.vehicleStatus ||
+                req.body.vehicle_status ||
+                "SUCCESS";
+    
+            const vehicleMessage =
+                req.body.message ||
+                req.body.vehicleMessage ||
+                req.body.vehicle_message ||
+                req.body.error ||
+                null;
+    
             if (!jobId && !moduleId) {
                 await rollbackSafely(client);
-                return res.status(400).json({ error: "jobId or moduleID is required" });
-            }
- 
-            if (failureReason) {
-                const failedJobResult = await client.query(
-                    `
-                    UPDATE revoke_jobs
-                    SET status = 'FAILED',
-                        failure_reason = $1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'PENDING'
-                      AND ($2::text IS NULL OR id::text = $2::text)
-                      AND ($3::text IS NULL OR module_id = $3)
-                    RETURNING *
-                    `,
-                    [failureReason, jobId || null, moduleId || null]
-                );
- 
-                await client.query("COMMIT");
- 
-                return res.status(409).json({
+                return res.status(400).json({
                     success: false,
-                    message: "Vehicle rejected or failed cloud owner revocation.",
-                    revokeJobs: failedJobResult.rows
+                    error: "jobId or moduleID is required"
                 });
             }
- 
-            if (!attestation) {
+    
+            const normalizedStatus = String(rawStatus).trim().toUpperCase();
+    
+            const isSuccess = ["SUCCESS", "DONE", "REVOKED", "OK", "WIPED"].includes(normalizedStatus);
+            const isFailed = ["FAILED", "FAIL", "ERROR", "INVALID_SIGNATURE", "NVS_ERASE_FAILED"].includes(normalizedStatus);
+    
+            if (!isSuccess && !isFailed) {
                 await rollbackSafely(client);
                 return res.status(400).json({
-                    error: "Revocation Attestation from vehicle is required"
+                    success: false,
+                    error: "status must be SUCCESS, DONE, REVOKED, OK, WIPED, FAILED, ERROR, INVALID_SIGNATURE, or NVS_ERASE_FAILED"
                 });
             }
- 
+    
             const jobResult = await client.query(
                 `
                 SELECT *
@@ -1135,14 +1133,53 @@ module.exports = {
                 `,
                 [jobId || null, moduleId || null]
             );
- 
+    
             if (jobResult.rows.length === 0) {
                 await rollbackSafely(client);
-                return res.status(404).json({ error: "No pending cloud owner revoke job found" });
+                return res.status(404).json({
+                    success: false,
+                    error: "No pending cloud owner revoke job found"
+                });
             }
- 
+    
             const job = jobResult.rows[0];
- 
+    
+            if (isFailed) {
+                const failedJobResult = await client.query(
+                    `
+                    UPDATE revoke_jobs
+                    SET status = 'FAILED',
+                        failure_reason = $1,
+                        key_snapshot = $2,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $3
+                    RETURNING *
+                    `,
+                    [
+                        vehicleMessage || normalizedStatus,
+                        {
+                            ...(job.key_snapshot || {}),
+                            revoke_type: "CLOUD_REVOKE_OWNER",
+                            vehicle_result: {
+                                status: "FAILED",
+                                message: vehicleMessage || normalizedStatus,
+                                received_at: new Date().toISOString()
+                            }
+                        },
+                        job.id
+                    ]
+                );
+    
+                await client.query("COMMIT");
+    
+                return res.status(409).json({
+                    success: false,
+                    message: "Vehicle reported cloud owner revocation failed. Cloud DB was not revoked.",
+                    flow: "CLOUD_REVOKE_OWNER",
+                    revokeJob: failedJobResult.rows[0]
+                });
+            }
+    
             const allKeysResult = await client.query(
                 `
                 SELECT *
@@ -1154,7 +1191,7 @@ module.exports = {
                 `,
                 [job.module_id, job.target_user_id]
             );
- 
+    
             const deletedKeysResult = await client.query(
                 `
                 DELETE FROM digital_keys
@@ -1164,7 +1201,7 @@ module.exports = {
                 `,
                 [job.module_id, job.target_user_id]
             );
- 
+    
             const vehicleResult = await client.query(
                 `
                 UPDATE vehicles
@@ -1176,7 +1213,7 @@ module.exports = {
                 `,
                 [job.module_id]
             );
- 
+    
             const updatedJobResult = await client.query(
                 `
                 UPDATE revoke_jobs
@@ -1191,34 +1228,43 @@ module.exports = {
                     {
                         ...(job.key_snapshot || {}),
                         revoke_type: "CLOUD_REVOKE_OWNER",
-                        revocation_attestation: attestation,
+                        vehicle_result: {
+                            status: "SUCCESS",
+                            message: vehicleMessage || "Vehicle keys removed successfully",
+                            received_at: new Date().toISOString()
+                        },
                         deleted_keys: allKeysResult.rows
                     },
                     job.id
                 ]
             );
- 
+    
             await client.query("COMMIT");
- 
+    
             return res.json({
                 success: true,
-                message: "Vehicle attestation accepted. Cloud removed Owner/Friend keys and marked vehicle as UNPAIRED. Push this attestation to Owner app for verify & wipe.",
+                message: "Vehicle reported revoke success. Cloud removed Owner/Friend keys and marked vehicle as UNPAIRED.",
                 flow: "CLOUD_REVOKE_OWNER",
                 revokeJob: updatedJobResult.rows[0],
-                revocationAttestation: attestation,
+                vehicleResult: {
+                    status: "SUCCESS",
+                    message: vehicleMessage || "Vehicle keys removed successfully"
+                },
                 deletedKeyCount: deletedKeysResult.rows.length,
                 deletedKeys: deletedKeysResult.rows,
                 vehicle: vehicleResult.rows[0] || null,
                 ownerPushPayload: {
-                    type: "OWNER_REVOKE_ATTESTATION",
+                    type: "OWNER_REVOKE_RESULT",
                     moduleID: job.module_id,
-                    revocationAttestation: attestation
+                    status: "SUCCESS",
+                    message: "Vehicle keys removed successfully"
                 }
             });
         } catch (err) {
             await rollbackSafely(client);
- 
+    
             return res.status(500).json({
+                success: false,
                 error: err.message,
                 detail: err.detail,
                 hint: err.hint

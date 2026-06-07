@@ -77,13 +77,19 @@ router.post(
     revokeController.verifyCloudSignedRevokeCommand
 );
  
-// CASE 2 - Hoàn tất thu hồi Owner bằng Revocation Attestation do xe ký.
-// Sau khi nhận attestation, Cloud xóa key, set xe UNPAIRED và trả payload để push cho Owner app verify & wipe.
+// CASE 2 - ESP32 báo kết quả xử lý lệnh Cloud/Admin revoke Owner từ xa.
+// ESP32 chỉ gửi SUCCESS/FAILED sau khi đã verify chữ ký và xóa dữ liệu cục bộ.
+// Server chỉ cập nhật DB sau khi nhận SUCCESS từ ESP32.
+router.post(
+    "/owner/vehicle-report",
+    revokeController.completeCloudOwnerRevokeWithVehicleResult
+);
+
+// Backward compatible nếu đã test bằng URL cũ.
+// Không dùng ADMIN JWT vì request này đến từ ESP32.
 router.post(
     "/owner/cloud-attestation",
-    verifyToken,
-    requireRole("ADMIN"),
-    revokeController.completeCloudOwnerRevokeWithAttestation
+    revokeController.completeCloudOwnerRevokeWithVehicleResult
 );
  
 module.exports = router;
