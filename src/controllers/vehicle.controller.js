@@ -377,25 +377,31 @@ module.exports = {
                 `
                 SELECT
                     v.*,
-                    vu.role,
-                    vu.status AS user_vehicle_status,
-                    vu.linked_at
-                FROM public.vehicle_users vu
+                    dk.role,
+                    dk.state AS user_vehicle_status,
+                    dk.created_at AS linked_at,
+                    dk.key_id
+                FROM public.digital_keys dk
                 JOIN public.vehicles v
-                    ON vu.module_id = v.module_id
-                WHERE vu.user_id = $1
-                  AND vu.status = 'ACTIVE'
-                ORDER BY vu.linked_at DESC
+                    ON dk.module_id = v.module_id
+                WHERE dk.holder_id = $1
+                  AND dk.state = 'ACTIVE'
+                ORDER BY dk.created_at DESC
                 `,
                 [req.auth.userId]
             );
- 
+    
             return res.json({
                 vehicles: result.rows
             });
         } catch (err) {
+            console.error("getMyModules error:", err);
+    
             return res.status(500).json({
-                error: err.message
+                error: err.message,
+                detail: err.detail,
+                hint: err.hint,
+                code: err.code
             });
         }
     },
