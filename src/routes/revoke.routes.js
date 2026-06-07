@@ -1,95 +1,109 @@
+// src/routes/revoke.routes.js
+
 const express = require("express");
 const router = express.Router();
- 
+
 const revokeController = require("../controllers/revoke.controller");
-const { verifyToken, requireRole } = require("../middleware/auth.middleware");
- 
-// CASE 1.1 - Owner thu hồi Friend
-// Cloud chuyển Friend key sang REVOKED ngay và tạo revoke job PENDING
-// để app đồng bộ INS_REMOVE_FRIEND xuống xe / soft-wipe ở Friend app.
-router.post(
-    "/friend",
-    verifyToken,
-    requireRole("USER"),
-    revokeController.createFriendRevokeRequest
-);
- 
-// Lấy các revoke job đang chờ xử lý.
-// Owner thấy job do mình tạo; Friend thấy job cần soft-wipe local key.
+const authMiddlewareModule = require("../middleware/auth.middleware");
+
+/**
+ * Fix lỗi:
+ * TypeError: argument handler must be a function
+ *
+ * Vì mỗi project có thể export middleware khác nhau:
+ * - module.exports = authMiddleware
+ * - exports.authMiddleware = ...
+ * - exports.verifyToken = ...
+ * - exports.authenticateToken = ...
+ */
+const authMiddleware =
+    typeof authMiddlewareModule === "function"
+        ? authMiddlewareModule
+        : authMiddlewareModule.authMiddleware ||
+          authMiddlewareModule.verifyToken ||
+          authMiddlewareModule.authenticateToken ||
+          authMiddlewareModule.verifyAccessToken ||
+          authMiddlewareModule.protect ||
+          authMiddlewareModule.requireAuth;
+
+if (typeof authMiddleware !== "function") {
+    throw new Error(
+        "auth.middleware.js không export function hợp lệ. Hãy kiểm tra tên export của auth middleware."
+    );
+}
+
+/**
+ * Debug nhẹ để nếu còn lỗi thì biết controller đang export gì.
+ * Có thể xóa sau khi chạy ổn.
+ */
+console.log("revokeController keys:", Object.keys(revokeController));
+
+/**
+ * Public / debug endpoints
+ * Không cần login.
+ */
+
+// Lấy Cloud public key để xe/app verify chữ ký revoke từ Cloud
 router.get(
-    "/jobs",
-    verifyToken,
-    requireRole("USER"),
-    revokeController.listMyRevokeJobs
-);
- 
-// Báo cáo job đã đồng bộ với xe hoặc Friend app đã wipe local key.
-router.post(
-    "/jobs/report",
-    verifyToken,
-    requireRole("USER"),
-    revokeController.reportRevokeJob
-);
- 
-// Backward compatible với route cũ /revoke/report.
-router.post(
-    "/report",
-    verifyToken,
-    requireRole("USER"),
-    revokeController.reportRevokeJob
-);
- 
-// CASE 1.2 - Owner tự thu hồi khóa gốc / reset xe.
-// Chỉ gọi sau khi app đã chạy CMD_REVOKE_OWNER bằng Standard Transaction
-// và xe xác nhận đã xóa NVS thành công.
-router.post(
-    "/owner",
-    verifyToken,
-    requireRole("USER"),
-    revokeController.revokeOwnerKey
-);
- 
-// CASE 2 - Cloud/Admin chủ động tạo yêu cầu thu hồi Owner từ xa.
-// Bước này chưa cho Owner app wipe; phải đợi xe trả Revocation Attestation.
-router.post(
-    "/owner/cloud-request",
-    verifyToken,
-    requireRole("ADMIN"),
-    revokeController.createCloudOwnerRevokeRequest
-);
- 
- 
-// Lấy Cloud Dilithium3 public key để cấu hình/pin trên Vehicle hoặc simulator.
-// Public key không phải bí mật, nhưng route vẫn giới hạn ADMIN để tránh lộ chi tiết triển khai.
-router.get(
-    "/owner/cloud-public-key",
-    verifyToken,
-    requireRole("ADMIN"),
+    "/cloud/public-key",
     revokeController.getCloudRevokeSigningPublicKey
 );
- 
-// Debug/test only: kiểm tra signedPayload + signature có hợp lệ không.
-// Vehicle thật nên tự verify bằng public key đã pin, không phụ thuộc API này.
+
+// Verify signed revoke command từ Cloud
 router.post(
-    "/owner/cloud-command/verify",
-    verifyToken,
-    requireRole("ADMIN"),
+    "/cloud/verify",
     revokeController.verifyCloudSignedRevokeCommand
 );
- 
-// CASE 2 - ESP32 báo kết quả xử lý lệnh Cloud/Admin revoke Owner từ xa.
-// ESP32 chỉ gửi SUCCESS/FAILED sau khi đã verify chữ ký và xóa dữ liệu cục bộ.
-// Server chỉ cập nhật DB sau khi nhận SUCCESS từ ESP32.
+
+/**
+ * Authenticated user endpoints
+ * Cần access token.
+ */
+
+// CASE 1.1 - Owner thu hồi Friend
 router.post(
-    "/owner/vehicle-report",
+    "/friend",
+    authMiddleware,
+    revokeController.createFriendRevokeRequest
+);
+
+// Lấy danh sách revoke jobs của user hiện tại
+router.get(
+    "/jobs",
+    authMiddleware,
+    revokeController.listMyRevokeJobs
+);
+
+// Báo cáo hoàn tất/thất bại revoke job
+router.post(
+    "/jobs/report",
+    authMiddleware,
+    revokeController.reportRevokeJob
+);
+
+// CASE 1.2 - Owner tự thu hồi/reset xe
+router.post(
+    "/owner",
+    authMiddleware,
+    revokeController.revokeOwnerKey
+);
+
+// CASE 2 - Cloud chủ động thu hồi Owner
+router.post(
+    "/cloud/owner",
+    authMiddleware,
+    revokeController.createCloudOwnerRevokeRequest
+);
+
+/**
+ * Vehicle / simulator endpoint
+ * Xe gửi kết quả revoke về Cloud.
+ * Hiện để public để ESP32/simulator gọi được.
+ * Nếu sau này có token riêng cho ESP32 thì thêm middleware ở đây.
+ */
+router.post(
+    "/cloud/owner/vehicle-result",
     revokeController.completeCloudOwnerRevokeWithVehicleResult
 );
 
-// Backward compatible nếu đã test bằng URL cũ.
-// Không dùng ADMIN JWT vì request này đến từ ESP32.
-router.post(
-    "/owner/cloud-attestation",
-    revokeController.completeCloudOwnerRevokeWithVehicleResult
-);
- 
 module.exports = router;

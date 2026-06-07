@@ -138,7 +138,7 @@ module.exports = {
 
     login: async (req, res) => {
         const client = await pool.connect();
-
+    
         try {
             const {
                 email,
@@ -147,66 +147,132 @@ module.exports = {
                 deviceName,
                 fcmToken,
             } = req.body;
-
+    
             if (!email || !password || !identity_pk) {
                 return res.status(400).json({
                     error: "email, password và identity_pk là bắt buộc",
                 });
             }
-
+    
             const normalizedEmail = normalizeEmail(email);
             const normalizedIdentityPk = normalizeIdentityPk(identity_pk);
-
+    
             await client.query("BEGIN");
-
+    
             const userResult = await client.query(
                 `
-                SELECT id, email, password_hash, display_name, role, created_at
+                SELECT
+                    id,
+                    email,
+                    password_hash,
+                    display_name,
+                    role,
+                    identity_pk,
+                    created_at
                 FROM users
                 WHERE email = $1
                 FOR UPDATE
                 `,
                 [normalizedEmail]
             );
-
+    
             if (userResult.rows.length === 0) {
                 await client.query("ROLLBACK");
                 return res.status(400).json({
                     error: "Email hoặc mật khẩu không đúng",
                 });
             }
-
-            const user = userResult.rows[0];
-
+    
+            let user = userResult.rows[0];
+    
             const isMatch = await comparePassword(password, user.password_hash);
-
+    
             if (!isMatch) {
                 await client.query("ROLLBACK");
                 return res.status(400).json({
                     error: "Email hoặc mật khẩu không đúng",
                 });
             }
-
-            const deviceResult = await client.query(
-                `
-                SELECT
-                    id,
-                    user_id,
-                    identity_pk,
-                    device_name,
-                    fcm_token,
-                    last_active,
-                    created_at
-                FROM user_devices
-                WHERE user_id = $1
-                  AND identity_pk = $2
-                LIMIT 1
-                `,
-                [user.id, normalizedIdentityPk]
-            );
-
+    
+            /**
+             * identity_pk bây giờ thuộc về USER.
+             * Nếu user chưa có identity_pk thì cập nhật lần đầu.
+             * Nếu đã có rồi thì bắt buộc phải khớp.
+             */
+            if (!user.identity_pk) {
+                const updatedUserResult = await client.query(
+                    `
+                    UPDATE users
+                    SET identity_pk = $1
+                    WHERE id = $2
+                    RETURNING
+                        id,
+                        email,
+                        password_hash,
+                        display_name,
+                        role,
+                        identity_pk,
+                        created_at
+                    `,
+                    [normalizedIdentityPk, user.id]
+                );
+    
+                user = updatedUserResult.rows[0];
+            } else if (user.identity_pk !== normalizedIdentityPk) {
+                await client.query("ROLLBACK");
+                return res.status(403).json({
+                    error: "Identity public key không khớp với tài khoản",
+                    detail: "identity_pk gửi lên không trùng với identity_pk của user",
+                });
+            }
+    
+            /**
+             * user_devices bây giờ chỉ lưu thông tin thiết bị đăng nhập.
+             * KHÔNG kiểm tra identity_pk ở bảng user_devices nữa.
+             *
+             * Nếu có fcmToken thì dùng fcmToken để nhận biết cùng 1 app/device.
+             * Nếu chưa có thì tạo bản ghi mới.
+             */
+            let deviceResult;
+    
+            if (fcmToken) {
+                deviceResult = await client.query(
+                    `
+                    SELECT
+                        id,
+                        user_id,
+                        device_name,
+                        fcm_token,
+                        last_active,
+                        created_at
+                    FROM user_devices
+                    WHERE user_id = $1
+                      AND fcm_token = $2
+                    LIMIT 1
+                    `,
+                    [user.id, fcmToken]
+                );
+            } else {
+                deviceResult = await client.query(
+                    `
+                    SELECT
+                        id,
+                        user_id,
+                        device_name,
+                        fcm_token,
+                        last_active,
+                        created_at
+                    FROM user_devices
+                    WHERE user_id = $1
+                      AND device_name = $2
+                    LIMIT 1
+                    `,
+                    [user.id, deviceName || null]
+                );
+            }
+    
             let device = null;
-
+    
             if (deviceResult.rows.length > 0) {
                 const updatedDeviceResult = await client.query(
                     `
@@ -214,12 +280,10 @@ module.exports = {
                     SET device_name = COALESCE($1, device_name),
                         fcm_token = COALESCE($2, fcm_token),
                         last_active = CURRENT_TIMESTAMP
-                    WHERE user_id = $3
-                      AND identity_pk = $4
+                    WHERE id = $3
                     RETURNING
                         id,
                         user_id,
-                        identity_pk,
                         device_name,
                         fcm_token,
                         last_active,
@@ -228,46 +292,24 @@ module.exports = {
                     [
                         deviceName || null,
                         fcmToken || null,
-                        user.id,
-                        normalizedIdentityPk,
+                        deviceResult.rows[0].id,
                     ]
                 );
-
+    
                 device = updatedDeviceResult.rows[0];
             } else {
-                const deviceCountResult = await client.query(
-                    `
-                    SELECT COUNT(*)::int AS count
-                    FROM user_devices
-                    WHERE user_id = $1
-                    `,
-                    [user.id]
-                );
-
-                const deviceCount = deviceCountResult.rows[0].count;
-
-                if (deviceCount > 0) {
-                    await client.query("ROLLBACK");
-                    return res.status(403).json({
-                        error: "Thiết bị không hợp lệ",
-                        detail: "Public key của thiết bị không khớp với tài khoản",
-                    });
-                }
-
                 const createdDeviceResult = await client.query(
                     `
                     INSERT INTO user_devices (
                         user_id,
-                        identity_pk,
                         device_name,
                         fcm_token,
                         last_active
                     )
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
                     RETURNING
                         id,
                         user_id,
-                        identity_pk,
                         device_name,
                         fcm_token,
                         last_active,
@@ -275,22 +317,21 @@ module.exports = {
                     `,
                     [
                         user.id,
-                        normalizedIdentityPk,
                         deviceName || null,
                         fcmToken || null,
                     ]
                 );
-
+    
                 device = createdDeviceResult.rows[0];
             }
-
+    
             await client.query("COMMIT");
-
+    
             const safeUser = sanitizeUser(user);
-
+    
             const accessToken = signAccessToken(safeUser);
             const refreshToken = signRefreshToken(safeUser);
-
+    
             return res.json({
                 message: "Đăng nhập thành công",
                 accessToken,

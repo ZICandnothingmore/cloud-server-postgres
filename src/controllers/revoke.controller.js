@@ -44,6 +44,20 @@ function isTrue(value) {
     return value === true || value === "true" || value === 1 || value === "1";
 }
  
+function verifyVehicleProvisionToken(req) {
+    const expectedToken = process.env.VEHICLE_PROVISION_TOKEN;
+
+    if (!expectedToken) {
+        return true;
+    }
+
+    const receivedToken =
+        req.headers["x-vehicle-provision-token"] ||
+        req.headers["x-provision-token"];
+
+    return receivedToken === expectedToken;
+}
+
 async function rollbackSafely(client) {
     try {
         await client.query("ROLLBACK");

@@ -95,7 +95,7 @@ module.exports = {
             }
  
             const exists = await client.query(
-                "SELECT module_id FROM public.vehicles WHERE LOWER(module_id) = LOWER($1)",
+                "SELECT module_id FROM vehicles WHERE LOWER(module_id) = LOWER($1)",
                 [normalizedModuleId]
             );
  
@@ -108,7 +108,7 @@ module.exports = {
  
             const result = await client.query(
                 `
-                INSERT INTO public.vehicles (
+                INSERT INTO vehicles (
                     module_id,
                     vin,
                     vehicle_identity_pk,
@@ -132,7 +132,7 @@ module.exports = {
  
             await client.query(
                 `
-                INSERT INTO public.vehicle_users (
+                INSERT INTO vehicle_users (
                     module_id,
                     user_id,
                     role,
@@ -223,47 +223,51 @@ module.exports = {
             const normalizedModuleId = moduleId.trim();
             const serverPublicKey = getCloudDilithiumPublicKeyHex();
             const serverKeyId = getCloudDilithiumKeyId();
- 
+
             await client.query("BEGIN");
- 
+
             const vehicleResult = await client.query(
                 `
                 SELECT module_id, status
-                FROM public.vehicles
-                WHERE LOWER(module_id) = LOWER($1)
+                FROM vehicles
+                WHERE TRIM(UPPER(module_id)) = TRIM(UPPER($1))
                 LIMIT 1
                 FOR UPDATE
                 `,
                 [normalizedModuleId]
             );
- 
+
             if (vehicleResult.rows.length === 0) {
                 await rollbackSafely(client);
                 return res.status(404).json({
                     success: false,
-                    error: "Vehicle moduleID not found"
+                    error: "Vehicle moduleID not found",
+                    debug: {
+                        receivedModuleID: moduleId,
+                        normalizedModuleID: normalizedModuleId
+                    }
                 });
             }
- 
-            const storedModuleId = vehicleResult.rows[0].module_id;
- 
+
+            const dbModuleId = vehicleResult.rows[0].module_id;
+
             await client.query(
                 `
-                UPDATE public.vehicles
+                UPDATE vehicles
                 SET vehicle_identity_pk = $1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE module_id = $2
                 `,
                 [
                     vehiclePublicKey,
-                    storedModuleId
+                    dbModuleId
                 ]
             );
- 
+
             await client.query("COMMIT");
- 
+
             return res.status(200).json({
-                moduleID: storedModuleId,
+                moduleID: dbModuleId,
                 serverIdentity: {
                     serverPublicKey,
                     serverKeyId
@@ -286,102 +290,17 @@ module.exports = {
         }
     },
  
-    getVehicleStatusForDevice: async (req, res) => {
-        try {
-            if (!verifyProvisionToken(req)) {
-                return res.status(401).json({
-                    success: false,
-                    error: "Invalid vehicle provision token"
-                });
-            }
- 
-            const moduleId = normalizeIdentifier(
-                req.params.moduleId ||
-                getModuleId(req.body) ||
-                req.query.moduleID ||
-                req.query.moduleId ||
-                req.query.module_id
-            );
- 
-            if (!moduleId) {
-                return res.status(400).json({
-                    success: false,
-                    error: "moduleID is required"
-                });
-            }
- 
-            const normalizedModuleId = String(moduleId).trim();
- 
-            const result = await pool.query(
-                `
-                SELECT
-                    module_id,
-                    status,
-                    vehicle_identity_pk,
-                    current_owner_id,
-                    vehicle_name,
-                    updated_at
-                FROM public.vehicles
-                WHERE LOWER(module_id) = LOWER($1)
-                LIMIT 1
-                `,
-                [normalizedModuleId]
-            );
- 
-            if (result.rows.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    error: "Vehicle moduleID not found"
-                });
-            }
- 
-            const vehicle = result.rows[0];
-            const normalizedStatus = String(vehicle.status || "").toUpperCase();
-            const shouldRevoke = normalizedStatus === "REVOKE_PENDING";
- 
-            return res.json({
-                success: true,
-                moduleID: vehicle.module_id,
-                status: vehicle.status,
-                registeredIdentity: !!vehicle.vehicle_identity_pk,
-                action: shouldRevoke
-                    ? {
-                        required: true,
-                        type: "CLOUD_REVOKE_OWNER",
-                        command: "CMD_REVOKE_OWNER",
-                        description: "ESP32 should wipe Owner key, Friend keys, session keys, and local NVS data, then report SUCCESS or FAILED to Server."
-                    }
-                    : {
-                        required: false
-                    },
-                vehicle: {
-                    moduleID: vehicle.module_id,
-                    vehicleName: vehicle.vehicle_name,
-                    status: vehicle.status,
-                    updatedAt: vehicle.updated_at
-                }
-            });
-        } catch (err) {
-            return res.status(500).json({
-                success: false,
-                error: err.message,
-                detail: err.detail,
-                hint: err.hint
-            });
-        }
-    },
- 
     getMyModules: async (req, res) => {
         try {
             const result = await pool.query(
                 `
-                SELECT
+                SELECT 
                     v.*,
                     vu.role,
                     vu.status AS user_vehicle_status,
                     vu.linked_at
-                FROM public.vehicle_users vu
-                JOIN public.vehicles v
+                FROM vehicle_users vu
+                JOIN vehicles v 
                     ON vu.module_id = v.module_id
                 WHERE vu.user_id = $1
                   AND vu.status = 'ACTIVE'
@@ -412,8 +331,8 @@ module.exports = {
                     vu.role,
                     vu.status AS user_vehicle_status,
                     vu.linked_at
-                FROM public.vehicles v
-                JOIN public.vehicle_users vu
+                FROM vehicles v
+                JOIN vehicle_users vu
                     ON vu.module_id = v.module_id
                 WHERE LOWER(v.module_id) = LOWER($1)
                   AND vu.user_id = $2
@@ -425,7 +344,7 @@ module.exports = {
                     req.auth.userId
                 ]
             );
- 
+            
             if (result.rows.length === 0) {
                 return res.status(404).json({
                     error: "Vehicle/Module không tồn tại hoặc bạn chưa có quyền truy cập"
