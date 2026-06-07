@@ -50,6 +50,7 @@ module.exports = {
     
             const normalizedEmail = normalizeEmail(email);
             const finalDisplayName = getDisplayName(displayName, normalizedEmail);
+            const normalizedIdentityPk = identity_pk ? normalizeIdentityPk(identity_pk) : null;
     
             await client.query("BEGIN");
     
@@ -69,34 +70,47 @@ module.exports = {
     
             const userResult = await client.query(
                 `
-                INSERT INTO users (email, password_hash, display_name, role)
-                VALUES ($1, $2, $3, 'USER')
-                RETURNING id, email, display_name, role, created_at
+                INSERT INTO users (
+                    email,
+                    password_hash,
+                    display_name,
+                    role,
+                    identity_pk
+                )
+                VALUES ($1, $2, $3, 'USER', $4)
+                RETURNING
+                    id,
+                    email,
+                    display_name,
+                    role,
+                    identity_pk,
+                    created_at
                 `,
-                [normalizedEmail, passwordHash, finalDisplayName]
+                [
+                    normalizedEmail,
+                    passwordHash,
+                    finalDisplayName,
+                    normalizedIdentityPk,
+                ]
             );
     
             const user = userResult.rows[0];
     
             let device = null;
     
-            if (identity_pk) {
-                const normalizedIdentityPk = normalizeIdentityPk(identity_pk);
-    
+            if (deviceName || fcmToken) {
                 const deviceResult = await client.query(
                     `
                     INSERT INTO user_devices (
                         user_id,
-                        identity_pk,
                         device_name,
                         fcm_token,
                         last_active
                     )
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
                     RETURNING
                         id,
                         user_id,
-                        identity_pk,
                         device_name,
                         fcm_token,
                         last_active,
@@ -104,7 +118,6 @@ module.exports = {
                     `,
                     [
                         user.id,
-                        normalizedIdentityPk,
                         deviceName || null,
                         fcmToken || null,
                     ]
@@ -115,21 +128,27 @@ module.exports = {
     
             await client.query("COMMIT");
     
-            const accessToken = signAccessToken(user);
-            const refreshToken = signRefreshToken(user);
+            const safeUser = sanitizeUser(user);
+    
+            const accessToken = signAccessToken(safeUser);
+            const refreshToken = signRefreshToken(safeUser);
     
             return res.status(201).json({
                 message: "Tạo tài khoản thành công",
                 accessToken,
                 refreshToken,
-                user,
+                user: safeUser,
                 device,
                 cloudPublicKey: getCloudPublicKey(),
             });
         } catch (err) {
             await client.query("ROLLBACK");
+    
             return res.status(500).json({
                 error: err.message,
+                detail: err.detail,
+                hint: err.hint,
+                code: err.code,
             });
         } finally {
             client.release();
@@ -404,24 +423,30 @@ module.exports = {
         try {
             const userResult = await pool.query(
                 `
-                SELECT id, email, display_name, role, created_at, updated_at
+                SELECT
+                    id,
+                    email,
+                    display_name,
+                    role,
+                    identity_pk,
+                    created_at,
+                    updated_at
                 FROM users
                 WHERE id = $1
                 `,
                 [req.auth.userId]
             );
-
+    
             if (userResult.rows.length === 0) {
                 return res.status(404).json({
                     error: "User not found",
                 });
             }
-
+    
             const devicesResult = await pool.query(
                 `
                 SELECT
                     id,
-                    identity_pk,
                     device_name,
                     fcm_token,
                     last_active,
@@ -432,7 +457,7 @@ module.exports = {
                 `,
                 [req.auth.userId]
             );
-
+    
             return res.json({
                 user: userResult.rows[0],
                 devices: devicesResult.rows,
@@ -441,6 +466,9 @@ module.exports = {
         } catch (err) {
             return res.status(500).json({
                 error: err.message,
+                detail: err.detail,
+                hint: err.hint,
+                code: err.code,
             });
         }
     },
