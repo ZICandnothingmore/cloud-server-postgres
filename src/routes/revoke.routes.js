@@ -1,21 +1,9 @@
-// src/routes/revoke.routes.js
-
 const express = require("express");
 const router = express.Router();
 
 const revokeController = require("../controllers/revoke.controller");
 const authMiddlewareModule = require("../middleware/auth.middleware");
 
-/**
- * Fix lỗi:
- * TypeError: argument handler must be a function
- *
- * Vì mỗi project có thể export middleware khác nhau:
- * - module.exports = authMiddleware
- * - exports.authMiddleware = ...
- * - exports.verifyToken = ...
- * - exports.authenticateToken = ...
- */
 const authMiddleware =
     typeof authMiddlewareModule === "function"
         ? authMiddlewareModule
@@ -23,15 +11,10 @@ const authMiddleware =
           authMiddlewareModule.verifyToken ||
           authMiddlewareModule.authenticateToken ||
           authMiddlewareModule.verifyAccessToken ||
-          authMiddlewareModule.protect ||
           authMiddlewareModule.requireAuth;
 
-if (typeof authMiddleware !== "function") {
-    throw new Error(
-        "auth.middleware.js không export function hợp lệ. Hãy kiểm tra tên export của auth middleware."
-    );
-}
-
+console.log("revokeController keys:", Object.keys(revokeController));
+console.log("authMiddleware type:", typeof authMiddleware);
 /**
  * Debug nhẹ để nếu còn lỗi thì biết controller đang export gì.
  * Có thể xóa sau khi chạy ổn.
@@ -88,21 +71,32 @@ router.post(
     revokeController.revokeOwnerKey
 );
 
-// CASE 2 - Cloud chủ động thu hồi Owner
+/**
+ * CASE 2 - Cloud/Admin thu hồi Owner từ xa theo status-based flow.
+ * Admin tạo yêu cầu revoke.
+ * Server set vehicles.status = REVOKE_PENDING.
+ */
+
+// API cũ: moduleID truyền trong body
 router.post(
-    "/cloud/owner",
+    "/owner/cloud-request",
     authMiddleware,
     revokeController.createCloudOwnerRevokeRequest
 );
 
+// API mới/gọn: moduleId truyền trên URL
+router.post(
+    "/owner/cloud-request/:moduleId",
+    authMiddleware,
+    revokeController.createCloudOwnerRevokeRequestByModuleId
+);
+
 /**
- * Vehicle / simulator endpoint
- * Xe gửi kết quả revoke về Cloud.
- * Hiện để public để ESP32/simulator gọi được.
- * Nếu sau này có token riêng cho ESP32 thì thêm middleware ở đây.
+ * ESP32 báo kết quả revoke về Server.
+ * ESP32 chỉ gửi SUCCESS/FAILED.
  */
 router.post(
-    "/cloud/owner/vehicle-result",
+    "/owner/cloud-request/:moduleId/result",
     revokeController.completeCloudOwnerRevokeWithVehicleResult
 );
 

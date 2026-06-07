@@ -159,23 +159,36 @@ module.exports = {
         const client = await pool.connect();
     
         try {
-            const {
+            let {
                 email,
                 password,
                 identity_pk,
                 deviceName,
                 fcmToken,
             } = req.body;
-    
-            if (!email || !password || !identity_pk) {
+            
+            if (!email || !password) {
                 return res.status(400).json({
-                    error: "email, password và identity_pk là bắt buộc",
+                    error: "email và password là bắt buộc",
                 });
             }
-    
+            
             const normalizedEmail = normalizeEmail(email);
-            const normalizedIdentityPk = normalizeIdentityPk(identity_pk);
-    
+            
+            const isAdminLogin =
+                normalizedEmail === "admin@gmail.com" ||
+                normalizedEmail === "admin1@gmail.com";
+            
+            if (!isAdminLogin && !identity_pk) {
+                return res.status(400).json({
+                    error: "identity_pk là bắt buộc",
+                });
+            }
+            
+            const normalizedIdentityPk = identity_pk
+                ? normalizeIdentityPk(identity_pk)
+                : null;
+            
             await client.query("BEGIN");
     
             const userResult = await client.query(
