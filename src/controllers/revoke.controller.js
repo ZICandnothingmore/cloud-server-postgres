@@ -1001,11 +1001,12 @@ module.exports = {
                 ownerEmail
                     ? `
                     SELECT dk.*, u.email AS owner_email
-                    FROM public.digital_keys dk
-                    JOIN public.users u ON u.id = dk.holder_id
+                    FROM public.users u
+                    JOIN public.digital_keys dk
+                      ON dk.owner_id = u.id
+                     AND dk.holder_id = u.id
                     WHERE LOWER(dk.module_id) = LOWER($1)
                       AND LOWER(u.email) = LOWER($2)
-                      AND dk.owner_id = dk.holder_id
                       AND dk.role = 'OWNER'
                       AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
                     LIMIT 1
