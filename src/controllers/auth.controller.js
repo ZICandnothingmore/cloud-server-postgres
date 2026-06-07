@@ -188,7 +188,7 @@ module.exports = {
                     role,
                     identity_pk,
                     created_at
-                FROM users
+                FROM public.users
                 WHERE email = $1
                 FOR UPDATE
                 `,
@@ -264,7 +264,7 @@ module.exports = {
                         fcm_token,
                         last_active,
                         created_at
-                    FROM user_devices
+                    FROM public.user_devices
                     WHERE user_id = $1
                       AND fcm_token = $2
                     LIMIT 1
@@ -281,7 +281,7 @@ module.exports = {
                         fcm_token,
                         last_active,
                         created_at
-                    FROM user_devices
+                    FROM public.user_devices
                     WHERE user_id = $1
                       AND device_name = $2
                     LIMIT 1
@@ -431,7 +431,7 @@ module.exports = {
                     identity_pk,
                     created_at,
                     updated_at
-                FROM users
+                FROM public.users
                 WHERE id = $1
                 `,
                 [req.auth.userId]
@@ -451,7 +451,7 @@ module.exports = {
                     fcm_token,
                     last_active,
                     created_at
-                FROM user_devices
+                FROM public.user_devices
                 WHERE user_id = $1
                 ORDER BY last_active DESC
                 `,
@@ -496,7 +496,7 @@ module.exports = {
             const userResult = await pool.query(
                 `
                 SELECT id, email, display_name, role, created_at
-                FROM users
+                FROM public.users
                 WHERE id = $1
                 `,
                 [decoded.userId]
