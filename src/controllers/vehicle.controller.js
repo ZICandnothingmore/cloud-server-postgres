@@ -36,7 +36,7 @@ function verifyProvisionToken(req) {
     const expectedToken = process.env.VEHICLE_PROVISION_TOKEN;
  
     if (!expectedToken) {
-        return true;
+        return false;
     }
  
     const receivedToken =
