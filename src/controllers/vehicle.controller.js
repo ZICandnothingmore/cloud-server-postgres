@@ -34,16 +34,30 @@ function getCloudDilithiumPublicKeyHex() {
  
 function verifyProvisionToken(req) {
     const expectedToken = process.env.VEHICLE_PROVISION_TOKEN;
- 
-    if (!expectedToken) {
-        return false;
-    }
- 
+
     const receivedToken =
         req.headers["x-vehicle-provision-token"] ||
         req.headers["x-provision-token"];
- 
-    return receivedToken === expectedToken;
+
+    console.log("===== VERIFY PROVISION TOKEN =====");
+    console.log("expectedToken:", expectedToken);
+    console.log("receivedToken:", receivedToken);
+    console.log("receivedToken === expectedToken:", receivedToken === expectedToken);
+    console.log("headers:", {
+        "x-provision-token": req.headers["x-provision-token"],
+        "x-vehicle-provision-token": req.headers["x-vehicle-provision-token"],
+    });
+    console.log("==================================");
+
+    if (!expectedToken) {
+        return false;
+    }
+
+    if (!receivedToken) {
+        return false;
+    }
+
+    return String(receivedToken).trim() === String(expectedToken).trim();
 }
  
 async function rollbackSafely(client) {
