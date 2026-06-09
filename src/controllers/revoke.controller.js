@@ -279,38 +279,71 @@ module.exports = {
                 });
             }
  
-            const friendKeyParams = keyId
-                ? [keyId, moduleId, req.auth.userId]
-                : [moduleId, req.auth.userId, friendEmail];
- 
-            const friendKeyResult = await client.query(
-                keyId
-                    ? `
-                    SELECT dk.*, holder.email AS holder_email, holder.display_name AS holder_name
-                    FROM public.digital_keys dk
-                    JOIN public.users holder ON holder.id = dk.holder_id
-                    WHERE dk.key_id = $1
-                      AND dk.module_id = $2
-                      AND dk.owner_id = $3::uuid
-                      AND dk.role = 'FRIEND'
-                      AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
-                    LIMIT 1
-                    FOR UPDATE OF dk
+            let friendKeyResult;
+
+            if (keyId) {
+                friendKeyResult = await client.query(
                     `
-                    : `
-                    SELECT dk.*, holder.email AS holder_email, holder.display_name AS holder_name
+                    SELECT
+                        dk.*,
+                        holder.email AS holder_email,
+                        holder.display_name AS holder_name,
+                        owner_user.email AS owner_email,
+                        owner_user.display_name AS owner_name
                     FROM public.digital_keys dk
                     JOIN public.users holder ON holder.id = dk.holder_id
-                    WHERE dk.module_id = $1
-                      AND dk.owner_id = $2::uuid
-                      AND LOWER(holder.email) = LOWER($3)
-                      AND dk.role = 'FRIEND'
-                      AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
+                    JOIN public.users owner_user ON owner_user.id = dk.owner_id
+                    WHERE LOWER(dk.key_id) = LOWER($1)
+                    AND LOWER(dk.module_id) = LOWER($2)
+                    AND dk.owner_id = $3::uuid
+                    AND dk.role = 'FRIEND'
+                    AND dk.owner_id <> dk.holder_id
+                    AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
                     LIMIT 1
                     FOR UPDATE OF dk
                     `,
-                friendKeyParams
-            );
+                    [keyId, moduleId, req.auth.userId]
+                );
+            } else {
+                friendKeyResult = await client.query(
+                    `
+                    SELECT
+                        dk.*,
+                        holder.email AS holder_email,
+                        holder.display_name AS holder_name,
+                        owner_user.email AS owner_email,
+                        owner_user.display_name AS owner_name
+                    FROM public.digital_keys dk
+                    JOIN public.users holder ON holder.id = dk.holder_id
+                    JOIN public.users owner_user ON owner_user.id = dk.owner_id
+                    WHERE LOWER(dk.module_id) = LOWER($1)
+                    AND dk.owner_id = $2::uuid
+                    AND LOWER(holder.email) = LOWER($3)
+                    AND dk.role = 'FRIEND'
+                    AND dk.owner_id <> dk.holder_id
+                    AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
+                    LIMIT 1
+                    FOR UPDATE OF dk
+                    `,
+                    [moduleId, req.auth.userId, friendEmail]
+                );
+            }
+
+            console.log("[REVOKE_FRIEND][OWNER_KEY_RESULT]", {
+                found: ownerKeyResult.rows.length,
+                ownerKey: ownerKeyResult.rows[0]
+                    ? {
+                          id: ownerKeyResult.rows[0].id,
+                          key_id: ownerKeyResult.rows[0].key_id,
+                          module_id: ownerKeyResult.rows[0].module_id,
+                          owner_id: ownerKeyResult.rows[0].owner_id,
+                          holder_id: ownerKeyResult.rows[0].holder_id,
+                          role: ownerKeyResult.rows[0].role,
+                          state: ownerKeyResult.rows[0].state
+                      }
+                    : null
+            });
+            
  
             if (friendKeyResult.rows.length === 0) {
                 await rollbackSafely(client);
@@ -700,7 +733,7 @@ module.exports = {
             const pqcSignature = getSignature(req.body);
             const vehicleResetConfirmed = isTrue(req.body.vehicleResetConfirmed) || isTrue(req.body.vehicle_reset_confirmed);
             const reason = req.body.reason || "Owner reset vehicle";
- 
+            
             if (!moduleId) {
                 await rollbackSafely(client);
                 return res.status(400).json({ error: "moduleID is required" });
@@ -967,26 +1000,27 @@ module.exports = {
     },
  
     /**
-     * CASE 2 - Cloud/Admin thu hồi Owner từ xa theo cơ chế status-based.
-     * Server không gửi trực tiếp lệnh điều khiển xuống ESP32.
-     * Server tạo revoke job PENDING và cập nhật vehicles.status = REVOKE_PENDING.
-     * ESP32 sẽ đọc status của module xe, tự xóa local key/NVS, rồi báo SUCCESS/FAILED về Server.
+     * CASE 2 - Cloud/Admin thu hồi Owner từ xa theo moduleID.
+     * Mỗi xe chỉ có một Owner key.
+     * Server tìm Owner key theo moduleID, chuyển Owner key và toàn bộ Friend key liên quan sang REVOKE_PENDING,
+     * tạo revoke job PENDING và đặt vehicles.status = REVOKE_PENDING để ESP32 phát hiện yêu cầu xử lý.
+     * Server chưa xóa key khỏi database ở bước này.
      */
     createCloudOwnerRevokeRequestByModuleId: async (req, res) => {
         req.body.moduleID = req.params.moduleId;
         return module.exports.createCloudOwnerRevokeRequest(req, res);
     },
- 
+
     createCloudOwnerRevokeRequest: async (req, res) => {
         const client = await pool.connect();
- 
+
         try {
             await client.query("BEGIN");
- 
+
             const moduleId = getModuleId(req.body);
             const ownerEmail = normalizeEmail(req.body.ownerEmail || req.body.owner_email || null);
             const reason = req.body.reason || "Cloud/Admin initiated Owner revocation";
- 
+
             if (!moduleId) {
                 await rollbackSafely(client);
                 return res.status(400).json({
@@ -994,19 +1028,18 @@ module.exports = {
                     error: "moduleID is required"
                 });
             }
- 
+
             const normalizedModuleId = String(moduleId).trim();
- 
+
             const ownerKeyResult = await client.query(
                 ownerEmail
                     ? `
                     SELECT dk.*, u.email AS owner_email
-                    FROM public.users u
-                    JOIN public.digital_keys dk
-                      ON dk.owner_id = u.id
-                     AND dk.holder_id = u.id
+                    FROM public.digital_keys dk
+                    JOIN public.users u ON u.id = dk.holder_id
                     WHERE LOWER(dk.module_id) = LOWER($1)
                       AND LOWER(u.email) = LOWER($2)
+                      AND dk.owner_id = dk.holder_id
                       AND dk.role = 'OWNER'
                       AND dk.state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
                     LIMIT 1
@@ -1025,7 +1058,7 @@ module.exports = {
                     `,
                 ownerEmail ? [normalizedModuleId, ownerEmail] : [normalizedModuleId]
             );
- 
+
             if (ownerKeyResult.rows.length === 0) {
                 await rollbackSafely(client);
                 return res.status(404).json({
@@ -1033,9 +1066,9 @@ module.exports = {
                     error: "No active OWNER key found for cloud revocation"
                 });
             }
- 
+
             const ownerKey = ownerKeyResult.rows[0];
- 
+
             const existingJobResult = await client.query(
                 `
                 SELECT *
@@ -1043,11 +1076,15 @@ module.exports = {
                 WHERE LOWER(module_id) = LOWER($1)
                   AND target_user_id = $2::uuid
                   AND status = 'PENDING'
+                  AND (
+                      key_snapshot->>'revoke_type' = 'CLOUD_REVOKE_OWNER'
+                      OR key_snapshot IS NULL
+                  )
                 LIMIT 1
                 `,
                 [ownerKey.module_id, ownerKey.holder_id]
             );
- 
+
             if (existingJobResult.rows.length > 0) {
                 await rollbackSafely(client);
                 return res.status(409).json({
@@ -1056,7 +1093,28 @@ module.exports = {
                     revokeJob: existingJobResult.rows[0]
                 });
             }
- 
+
+            const pendingKeysResult = await client.query(
+                `
+                UPDATE public.digital_keys
+                SET state = 'REVOKE_PENDING',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE LOWER(module_id) = LOWER($1)
+                  AND owner_id = $2::uuid
+                  AND state IN ('ACTIVE', 'PROVISIONING', 'SUSPENDED')
+                RETURNING *
+                `,
+                [ownerKey.module_id, ownerKey.holder_id]
+            );
+
+            if (pendingKeysResult.rows.length === 0) {
+                await rollbackSafely(client);
+                return res.status(409).json({
+                    success: false,
+                    error: "No keys were moved to REVOKE_PENDING"
+                });
+            }
+
             const jobResult = await client.query(
                 `
                 INSERT INTO public.revoke_jobs (
@@ -1089,15 +1147,17 @@ module.exports = {
                     ownerKey.holder_id,
                     reason,
                     {
-                        ...ownerKey,
+                        owner_key: ownerKey,
+                        pending_keys: pendingKeysResult.rows,
                         revoke_type: "CLOUD_REVOKE_OWNER",
+                        key_state_signal: "REVOKE_PENDING",
                         vehicle_status_signal: "REVOKE_PENDING",
-                        server_action: "SET_VEHICLE_STATUS_ONLY",
-                        note: "Server does not send a signed command. ESP32 reads vehicle status and performs local revoke when status is REVOKE_PENDING."
+                        server_action: "MARK_OWNER_AND_FRIEND_KEYS_REVOKE_PENDING",
+                        note: "Server marks Owner key and related Friend keys as REVOKE_PENDING. ESP32 wipes local keys/NVS, then reports SUCCESS or FAILED. Server deletes keys only after SUCCESS."
                     }
                 ]
             );
- 
+
             const vehicleResult = await client.query(
                 `
                 UPDATE public.vehicles
@@ -1108,26 +1168,32 @@ module.exports = {
                 `,
                 [ownerKey.module_id]
             );
- 
+
             await client.query("COMMIT");
- 
+
             return res.status(201).json({
                 success: true,
-                message: "Cloud owner revoke request created. Vehicle status is REVOKE_PENDING. Waiting for ESP32 to process local revoke and report SUCCESS/FAILED.",
+                message: "Cloud owner revoke request created. Owner/Friend keys are REVOKE_PENDING. Waiting for ESP32 to wipe local data and report SUCCESS/FAILED.",
                 flow: "CLOUD_REVOKE_OWNER",
                 moduleID: ownerKey.module_id,
+                ownerKeyId: ownerKey.key_id,
+                ownerId: ownerKey.holder_id,
+                keyState: "REVOKE_PENDING",
                 vehicleStatus: "REVOKE_PENDING",
+                pendingKeyCount: pendingKeysResult.rows.length,
+                pendingKeys: pendingKeysResult.rows,
                 revokeJob: jobResult.rows[0],
                 vehicle: vehicleResult.rows[0] || null,
                 deviceAction: {
                     moduleID: ownerKey.module_id,
+                    expectedKeyState: "REVOKE_PENDING",
                     expectedVehicleStatus: "REVOKE_PENDING",
-                    description: "ESP32 should read vehicle status, wipe Owner key, Friend keys, session keys and NVS data, then report SUCCESS or FAILED to Server."
+                    description: "ESP32 should wipe Owner key, related Friend keys, session keys and NVS data, then report SUCCESS or FAILED to Server."
                 }
             });
         } catch (err) {
             await rollbackSafely(client);
- 
+
             return res.status(500).json({
                 success: false,
                 error: err.message,
@@ -1138,15 +1204,16 @@ module.exports = {
             client.release();
         }
     },
- 
+
     /**
      * CASE 2 - ESP32 báo kết quả xử lý Cloud/Admin revoke Owner.
-     * ESP32 chỉ gửi SUCCESS/FAILED sau khi đã tự xóa local key/NVS.
-     * Nếu SUCCESS, Server mới xóa key trong DB và đưa xe về UNPAIRED.
+     * Nếu SUCCESS, Server xóa toàn bộ Owner key và Friend key liên quan khỏi digital_keys,
+     * chuyển revoke job sang REVOKED và đưa xe về FACTORY.
+     * Nếu FAILED, Server không xóa key mà ghi nhận lỗi để tránh mất đồng bộ.
      */
     completeCloudOwnerRevokeWithVehicleResult: async (req, res) => {
         const client = await pool.connect();
-    
+
         try {
             if (!verifyVehicleProvisionToken(req)) {
                 return res.status(401).json({
@@ -1154,25 +1221,25 @@ module.exports = {
                     error: "Invalid vehicle provision token"
                 });
             }
- 
+
             await client.query("BEGIN");
-    
+
             const jobId = req.body.jobId || req.body.job_id || req.body.id;
             const moduleId = normalizeIdentifier(req.params.moduleId || getModuleId(req.body));
-    
+
             const rawStatus =
                 req.body.status ||
                 req.body.result ||
                 req.body.vehicleStatus ||
                 req.body.vehicle_status;
-    
+
             const vehicleMessage =
                 req.body.message ||
                 req.body.vehicleMessage ||
                 req.body.vehicle_message ||
                 req.body.error ||
                 null;
-    
+
             if (!jobId && !moduleId) {
                 await rollbackSafely(client);
                 return res.status(400).json({
@@ -1180,7 +1247,7 @@ module.exports = {
                     error: "jobId or moduleID is required"
                 });
             }
- 
+
             if (!rawStatus) {
                 await rollbackSafely(client);
                 return res.status(400).json({
@@ -1188,12 +1255,12 @@ module.exports = {
                     error: "status is required"
                 });
             }
-    
+
             const normalizedStatus = String(rawStatus).trim().toUpperCase();
-    
+
             const isSuccess = ["SUCCESS", "DONE", "REVOKED", "OK", "WIPED"].includes(normalizedStatus);
             const isFailed = ["FAILED", "FAIL", "ERROR", "INVALID_SIGNATURE", "NVS_ERASE_FAILED", "LOCAL_KEY_NOT_FOUND"].includes(normalizedStatus);
-    
+
             if (!isSuccess && !isFailed) {
                 await rollbackSafely(client);
                 return res.status(400).json({
@@ -1201,7 +1268,7 @@ module.exports = {
                     error: "status must be SUCCESS, DONE, REVOKED, OK, WIPED, FAILED, ERROR, INVALID_SIGNATURE, NVS_ERASE_FAILED, or LOCAL_KEY_NOT_FOUND"
                 });
             }
-    
+
             const jobResult = await client.query(
                 `
                 SELECT *
@@ -1215,7 +1282,7 @@ module.exports = {
                 `,
                 [jobId || null, moduleId || null]
             );
-    
+
             if (jobResult.rows.length === 0) {
                 await rollbackSafely(client);
                 return res.status(404).json({
@@ -1223,10 +1290,23 @@ module.exports = {
                     error: "No pending cloud owner revoke job found"
                 });
             }
-    
+
             const job = jobResult.rows[0];
-    
+
             if (isFailed) {
+                const failedKeysResult = await client.query(
+                    `
+                    UPDATE public.digital_keys
+                    SET state = 'REVOKE_FAILED',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE LOWER(module_id) = LOWER($1)
+                      AND owner_id = $2::uuid
+                      AND state = 'REVOKE_PENDING'
+                    RETURNING *
+                    `,
+                    [job.module_id, job.target_user_id]
+                );
+
                 const failedJobResult = await client.query(
                     `
                     UPDATE public.revoke_jobs
@@ -1246,12 +1326,13 @@ module.exports = {
                                 status: "FAILED",
                                 message: vehicleMessage || normalizedStatus,
                                 received_at: new Date().toISOString()
-                            }
+                            },
+                            failed_keys: failedKeysResult.rows
                         },
                         job.id
                     ]
                 );
-    
+
                 const vehicleResult = await client.query(
                     `
                     UPDATE public.vehicles
@@ -1262,12 +1343,12 @@ module.exports = {
                     `,
                     [job.module_id]
                 );
- 
+
                 await client.query("COMMIT");
-    
+
                 return res.status(409).json({
                     success: false,
-                    message: "Vehicle reported cloud owner revocation failed. Cloud DB keys were not removed.",
+                    message: "Vehicle reported cloud owner revocation failed. Cloud DB keys were not deleted.",
                     flow: "CLOUD_REVOKE_OWNER",
                     moduleID: job.module_id,
                     revokeJob: failedJobResult.rows[0],
@@ -1275,44 +1356,59 @@ module.exports = {
                         status: "FAILED",
                         message: vehicleMessage || normalizedStatus
                     },
+                    failedKeyCount: failedKeysResult.rows.length,
+                    failedKeys: failedKeysResult.rows,
                     vehicle: vehicleResult.rows[0] || null
                 });
             }
-    
+
             const allKeysResult = await client.query(
                 `
                 SELECT *
                 FROM public.digital_keys
-                WHERE module_id = $1
+                WHERE LOWER(module_id) = LOWER($1)
                   AND owner_id = $2::uuid
                 ORDER BY created_at ASC
                 FOR UPDATE
                 `,
                 [job.module_id, job.target_user_id]
             );
-    
+
             const deletedKeysResult = await client.query(
                 `
                 DELETE FROM public.digital_keys
-                WHERE module_id = $1
+                WHERE LOWER(module_id) = LOWER($1)
                   AND owner_id = $2::uuid
                 RETURNING *
                 `,
                 [job.module_id, job.target_user_id]
             );
-    
+
+            const cancelledInvitationsResult = await client.query(
+                `
+                UPDATE public.key_invitations
+                SET status = 'CANCELLED',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE LOWER(module_id) = LOWER($1)
+                  AND sender_id = $2::uuid
+                  AND status = 'PENDING'
+                RETURNING *
+                `,
+                [job.module_id, job.target_user_id]
+            );
+
             const vehicleResult = await client.query(
                 `
                 UPDATE public.vehicles
-                SET status = 'UNPAIRED',
+                SET status = 'FACTORY',
                     current_owner_id = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE module_id = $1
+                WHERE LOWER(module_id) = LOWER($1)
                 RETURNING *
                 `,
                 [job.module_id]
             );
-    
+
             const updatedJobResult = await client.query(
                 `
                 UPDATE public.revoke_jobs
@@ -1332,17 +1428,19 @@ module.exports = {
                             message: vehicleMessage || "Vehicle keys removed successfully",
                             received_at: new Date().toISOString()
                         },
-                        deleted_keys: allKeysResult.rows
+                        deleted_keys: allKeysResult.rows,
+                        cancelled_invitations: cancelledInvitationsResult.rows,
+                        final_vehicle_status: "FACTORY"
                     },
                     job.id
                 ]
             );
-    
+
             await client.query("COMMIT");
-    
+
             return res.json({
                 success: true,
-                message: "Vehicle reported revoke success. Cloud removed Owner/Friend keys and marked vehicle as UNPAIRED.",
+                message: "Vehicle reported revoke success. Cloud deleted Owner/Friend keys and marked vehicle as FACTORY.",
                 flow: "CLOUD_REVOKE_OWNER",
                 moduleID: job.module_id,
                 revokeJob: updatedJobResult.rows[0],
@@ -1352,17 +1450,20 @@ module.exports = {
                 },
                 deletedKeyCount: deletedKeysResult.rows.length,
                 deletedKeys: deletedKeysResult.rows,
+                cancelledInvitationCount: cancelledInvitationsResult.rows.length,
+                cancelledInvitations: cancelledInvitationsResult.rows,
                 vehicle: vehicleResult.rows[0] || null,
                 ownerPushPayload: {
                     type: "OWNER_REVOKE_RESULT",
                     moduleID: job.module_id,
                     status: "SUCCESS",
+                    vehicleStatus: "FACTORY",
                     message: "Vehicle keys removed successfully"
                 }
             });
         } catch (err) {
             await rollbackSafely(client);
-    
+
             return res.status(500).json({
                 success: false,
                 error: err.message,
@@ -1373,4 +1474,6 @@ module.exports = {
             client.release();
         }
     }
+
 };
+
